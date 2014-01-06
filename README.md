@@ -16,7 +16,12 @@ Graphios is release under the [GPL v2](http://www.gnu.org/licenses/gpl-2.0.html)
 
 The goal of graphios is to get nagios perf data into graphite (carbon).
 
-The way we accomplish this is by setting up custom variables for services and hosts called \_graphiteprefix and \_graphitepostfix. This allows you to control the string that gets sent to graphite. You can set just the prefix or just the posfix.
+We can do this one of two ways, defined metric names or automatic metric names.
+
+Defined metric names
+--------------------
+
+To do this we set up custom variables for services and hosts called \_graphiteprefix and \_graphitepostfix. This allows you to control the string that gets sent to graphite. You can set just the prefix or just the posfix.
 
 The format is simply:
 
@@ -78,17 +83,51 @@ Would give the following:
 (nrdp = what provided the results, load = plugin name, the load1,load5, and load15 are from the plugin).
 
 
-Automatic names
----------------
+Automatic metric names
+----------------------
 
-Who not Automatic names instead of custom variables?
+UPDATE: Graphios now supports automatic metric names.
 
-I set this up first actually, I would convert service\_descriptions to be 'my-service-description' and have it so that each host was:
+This works via:
 
-hostname.my-service-description.perfdata
+graphiosprefix.hostname.service-description.graphiospostfix.perfdata
 
-This got unorganized pretty fast, so I had to create several custom rules and made a config file to manage all the custom rules. So then you had to manage a custom config file and the nagios configs, which I decided didn't make sense for me. This method may work for some people but for my organization it's just not going to work, so I went with keeping all of the nagios config in nagios. If you have a better idea of how to integrate nagios and graphite I'd love to hear it.
+So If you have a service that looks like this:
 
+<pre>
+define service {
+    service_description         My awesome service
+    host_name                   myhost
+    _graphiteprefix             datacenter01.webservers
+    _graphitepostfix            awesome.service
+}
+</pre>
+
+You would get the carbon metric:
+
+    datacenter01.webservers.myhost.My_awesome_service.awesome.service.perf1 1.00 nagios_timet
+
+Or if you don't use a graphios prefix and postfix, and your service looks like
+this:
+
+define service {
+    service_description         My awesome service
+    host_name                   myhost
+}
+
+You would geti the carbon metric:
+
+    myhost.My_awesome_service.perf1 1.00 nagios_timet
+
+Some notes about using this:
+
+(1) ALL of your nagios services with perfdata are going to send data to carbon now.
+
+(2) Your service descriptions may have a lot of invalid carbon chars in them (mine do), I convert any invalid chars to the global replacement_char (which is by default "_" but change to whatever you want.
+
+(3) You may want to rename several of your service descriptions to get your carbon more organized.
+
+To turn this on, all you need to do is change the "use_service_desc = False" to "True" at the begining of the script.
 
 Big Fat Warning
 ---------------
@@ -205,6 +244,10 @@ sleep_max = 480
 # test mode makes it so we print what we would add to carbon, and not delete
 # any files from the spool directory. log_level must be DEBUG as well.
 test_mode = False
+
+# use service description as part of your carbon metric
+# $GRAPHIOSPREFIX.$HOSTNAME.$SERVICEDESC.$GRAPHIOSPOSTFIX.$PERFDATA
+use_service_desc = False
 
 ##### You should stop changing things unless you know what you are doing #####
 ##############################################################################
@@ -441,6 +484,7 @@ extra_service_conf["_graphiteprefix"] = [
 ]
 </pre>
 
+NOTE: The "CPU load" is required and must match the "service_description" that check_mk uses.
 
 # Trouble getting it working?
 
