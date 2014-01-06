@@ -141,10 +141,11 @@ def send_carbon(carbon_list):
     """
     global sock
     global sleep_time
-    message = convert_pickle(carbon_list)
+    messages = convert_pickle(carbon_list)
     #message = '\n'.join(carbon_list) + '\n'
     try:
-        sock.sendall(message)
+        for message in messages:
+            sock.sendall(message)
         return True
     except Exception, ex:
         log.critical("Can't send message to carbon error:%s" % ex)
@@ -168,19 +169,28 @@ def send_carbon(carbon_list):
 
 def convert_pickle(carbon_list):
     """
-        Converts a list into pickle formatted message and returns it
+        Converts a list into pickle formatted messages and returns it
     """
+    MAX_METRICS=200
+    messages = []
     pickle_list = []
     for metric in carbon_list:
         path, value, timestamp = metric.strip().rsplit(' ', 2)
         path = re.sub(r"\s+", replacement_character, path)
         metric_tuple = (path, (timestamp, value))
         pickle_list.append(metric_tuple)
-
-    payload = pickle.dumps(pickle_list)
-    header = struct.pack("!L", len(payload))
-    message = header + payload
+    for pickle_list_chunk in chunks(pickle_list,MAX_METRICS):
+        payload = pickle.dumps(pickle_list_chunk)
+        header = struct.pack("!L", len(payload))
+        message = header + payload
     return message
+
+
+def chunks(l, n):
+    """ Yield successive n-sized chunks from l.
+    """
+    for i in xrange(0, len(l), n):
+        yield l[i:i+n]
 
 
 def process_host_data(file_name, delete_after=0):
