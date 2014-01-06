@@ -75,6 +75,10 @@ test_mode = False
 # Character to use as replacement for invalid characters in metric names
 replacement_character = '_'
 
+# use service description as part of your carbon metric
+# $GRAPHIOSPREFIX.$HOSTNAME.$SERVICEDESC.$GRAPHIOSPOSTFIX.$PERFDATA
+use_service_desc = False
+
 ##### You should stop changing things unless you know what you are doing #####
 ##############################################################################
 
@@ -142,7 +146,6 @@ def send_carbon(carbon_list):
     global sock
     global sleep_time
     messages = convert_pickle(carbon_list)
-    #message = '\n'.join(carbon_list) + '\n'
     try:
         for message in messages:
             sock.sendall(message)
@@ -171,15 +174,14 @@ def convert_pickle(carbon_list):
     """
         Converts a list into pickle formatted messages and returns it
     """
-    MAX_METRICS=200
-    messages = []
+    MAX_METRICS = 200
     pickle_list = []
     for metric in carbon_list:
         path, value, timestamp = metric.strip().rsplit(' ', 2)
         path = re.sub(r"\s+", replacement_character, path)
         metric_tuple = (path, (timestamp, value))
         pickle_list.append(metric_tuple)
-    for pickle_list_chunk in chunks(pickle_list,MAX_METRICS):
+    for pickle_list_chunk in chunks(pickle_list, MAX_METRICS):
         payload = pickle.dumps(pickle_list_chunk)
         header = struct.pack("!L", len(payload))
         message = header + payload
@@ -190,7 +192,7 @@ def chunks(l, n):
     """ Yield successive n-sized chunks from l.
     """
     for i in xrange(0, len(l), n):
-        yield l[i:i+n]
+        yield l[i:i + n]
 
 
 def process_host_data(file_name, delete_after=0):
@@ -230,38 +232,45 @@ rta=1.066ms;5.000;10.000;0; pl=0%;5;10;; rtmax=4.368ms;;;; rtmin=0.196ms;;;;
     graphite_lines = []
     for line in file_array:
         variables = line.split('\t')
-        host_name = ""
-        time_stamp = ""
-        host_perf_data = ""
-        graphite_postfix = ""
-        graphite_prefix = ""
         carbon_string = ""
+        carbon_dict = {}
         for var in variables:
             (var_name, value) = var.split('::')
-            if var_name == 'TIMET':
-                time_stamp = value
-            if var_name == 'HOSTNAME':
-                host_name = value
-            if var_name == 'HOSTPERFDATA':
-                host_perf_data = value
-            if var_name == 'GRAPHITEPOSTFIX':
-                value = re.sub("\s", "", value)
-                if value != "$_HOSTGRAPHITEPOSTFIX$":
-                    graphite_postfix = value
-            if var_name == 'GRAPHITEPREFIX':
-                value = re.sub("\s", "", value)
-                if str(value) != "$_HOSTGRAPHITEPREFIX$":
-                    graphite_prefix = value
-
-        if host_perf_data == "":
-            continue
-        carbon_string = build_carbon_metric(
-            graphite_prefix, host_name, graphite_postfix)
+            carbon_dict[var_name] = value
+        if validate_host_dict(carbon_dict):
+            carbon_string = build_carbon_metric(carbon_dict)
         if carbon_string:
-            graphite_lines.extend(process_host_perf_data(
-                                  carbon_string, host_perf_data, time_stamp))
-
+            graphite_lines.extend(process_nagios_perf_data(
+                                  carbon_string, carbon_dict['HOSTPERFDATA'],
+                                  carbon_dict['TIMET']))
     handle_file(file_name, graphite_lines, test_mode, delete_after)
+
+
+def validate_host_time(carbon_dict):
+    valid = True
+    try:
+        if carbon_dict['TIMET'] == "":
+            log.debug('TIMET was ""')
+            valid = False
+        if carbon_dict['HOSTNAME'] == "":
+            log.debug('HOSTNAME was ""')
+            valid = False
+    except KeyError:
+        log.debug('HOSTNAME or TIMET was not in carbon_dict')
+        valid = False
+    return valid
+
+
+def validate_host_dict(carbon_dict):
+    valid = validate_host_time(carbon_dict)
+    try:
+        if carbon_dict['HOSTPERFDATA'] == "":
+            log.debug('HOSTPERFDATA was ""')
+            valid = False
+    except KeyError:
+        log.debug('HOSTPERFDATA was not in carbon_dict')
+        valid = False
+    return valid
 
 
 def handle_file(file_name, graphite_lines, test_mode, delete_after):
@@ -272,9 +281,8 @@ def handle_file(file_name, graphite_lines, test_mode, delete_after):
         if the graphite_lines has a length of 0, there was no graphite
         data, and we remove the file.
     """
-    if test_mode:
-        if len(graphite_lines) > 0:
-            log.debug("graphite_lines:%s" % graphite_lines)
+    if test_mode and len(graphite_lines) > 0:
+        log.debug("graphite_lines:%s" % graphite_lines)
     else:
         if len(graphite_lines) > 0:
             if send_carbon(graphite_lines):
@@ -295,22 +303,6 @@ def handle_file(file_name, graphite_lines, test_mode, delete_after):
                 except Exception, ex:
                     log.critical("couldn't remove file %s error:%s" % (
                         file_name, ex))
-
-
-def process_service_perf_data(carbon_string, perf_data, time_stamp):
-    """
-       given the nagios perfdata, and some variables we return a list of
-       carbon formatted strings.
-    """
-    return process_nagios_perf_data(carbon_string, perf_data, time_stamp)
-
-
-def process_host_perf_data(carbon_string, perf_data, time_stamp):
-    """
-        given the nagios perfdata, and some variables we return a list of
-        carbon formatted values. carbon_string should already have a trailing .
-    """
-    return process_nagios_perf_data(carbon_string, perf_data, time_stamp)
 
 
 def process_nagios_perf_data(carbon_string, perf_data, time_stamp):
@@ -389,72 +381,84 @@ def process_service_data(file_name, delete_after=0):
     graphite_lines = []
     for line in file_array:
         variables = line.split('\t')
-        host_name = ""
-        time_stamp = ""
-        service_perf_data = ""
-        graphite_postfix = ""
-        graphite_prefix = ""
         carbon_string = ""
+        service_dict = {}
         for var in variables:
+            var_name = ""
+            value = ""
             if re.search("::", var):
                 var_name = var.split('::')[0]
-                if var_name == 'SERVICECHECKCOMMAND':
-                    continue
                 value = var[len(var_name) + 2:]
-            else:
-                var_name = ""
-            if var_name == 'TIMET':
-                time_stamp = value
-            if var_name == 'HOSTNAME':
-                host_name = value
-            if var_name == 'SERVICEPERFDATA':
-                service_perf_data = value.replace('/', replacement_character)
-            if var_name == 'GRAPHITEPOSTFIX':
-                value = re.sub("\s", "", value)
-                if value != "$_SERVICEGRAPHITEPOSTFIX$":
-                    graphite_postfix = value
-            if var_name == 'GRAPHITEPREFIX':
-                value = re.sub("\s", "", value)
-                if value != "$_SERVICEGRAPHITEPREFIX$":
-                    graphite_prefix = value
-
-        if not re.search("=", service_perf_data):
-            # no perfdata to parse, so we're done
-            continue
-
-        carbon_string = build_carbon_metric(
-            graphite_prefix, host_name, graphite_postfix)
+            service_dict[var_name] = value
+        if validate_service_dict(service_dict):
+            carbon_string = build_carbon_metric(service_dict)
         if carbon_string:
-            graphite_lines.extend(process_service_perf_data(
-                                  carbon_string, service_perf_data,
-                                  time_stamp))
-
+            graphite_lines.extend(process_nagios_perf_data(
+                                  carbon_string,
+                                  service_dict['SERVICEPERFDATA'],
+                                  service_dict['TIMET']))
     handle_file(file_name, graphite_lines, test_mode, delete_after)
 
 
-def build_carbon_metric(graphite_prefix, host_name, graphite_postfix):
+def validate_service_dict(service_dict):
+    valid = validate_host_time(service_dict)
+    try:
+        if service_dict['SERVICEPERFDATA'] == "":
+            log.debug('SERVICEPERFDATA was ""')
+            valid = False
+        if not re.search("=", service_dict['SERVICEPERFDATA']):
+            log.debug('no = in SERVICEPERFDATA')
+            valid = False
+    except KeyError:
+        log.debug('SERVICEPERFDATA not found in config dict')
+        valid = False
+    return valid
+
+
+def build_carbon_metric(carbon_dict):
     """
        builds the metric to send to carbon, returns empty string if
        there's insufficient data and we shouldn't forward to carbon.
     """
-
-    if (graphite_prefix == "" and graphite_postfix == ""):
+    graphite_prefix = carbon_dict.get('GRAPHITEPREFIX') or ""
+    graphite_prefix = graphite_prefix.replace("$_HOSTGRAPHITEPREFIX$\n", "")
+    graphite_prefix = fix_carbon_string(graphite_prefix)
+    graphite_postfix = carbon_dict.get('GRAPHITEPOSTFIX') or ""
+    graphite_postfix = graphite_postfix.replace("$_HOSTGRAPHITEPOSTFIX$\n", "")
+    graphite_postfix = fix_carbon_string(graphite_postfix)
+    host_name = carbon_dict['HOSTNAME']
+    if (
+        graphite_prefix == "" and graphite_postfix == "" and
+        use_service_desc is False
+    ):
+        # if there is no prefix postfix and service desc is false, we have
+        # no metric to build.
         return ""
-
     carbon_string = ""
     if graphite_prefix != "":
         carbon_string = "%s." % graphite_prefix
-    if host_name != "":
-        host_name = host_name.replace('.', replacement_character)
-        carbon_string = carbon_string + "%s." % host_name
-    else:
-        log.debug("can't find hostname given %s" % (host_name))
-        return ""
-
+    host_name = host_name.replace('.', replacement_character)
+    carbon_string = carbon_string + "%s." % host_name
+    if use_service_desc:
+        service_desc = carbon_dict.get('SERVICEDESC') or ""
+        service_desc = fix_carbon_string(service_desc)
+        if service_desc != "":
+            carbon_string = carbon_string + "%s." % service_desc
     if graphite_postfix != "":
         carbon_string = carbon_string + "%s." % graphite_postfix
-
     return carbon_string
+
+
+def fix_carbon_string(my_string):
+    """
+        takes a string and replaces whitespace and invalid carbon chars with
+        the global replacement_character
+    """
+    invalid_chars = '~!@#$:;%^*()+={}[]|\/<>'
+    my_string = re.sub("\s", replacement_character, my_string)
+    for char in invalid_chars:
+        my_string = my_string.replace(char, replacement_character)
+    return my_string
 
 
 def process_spool_dir(directory):
